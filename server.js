@@ -60,21 +60,35 @@ const OFFICES = {
   }
 };
 
-// Booking storage: Firestore when configured (survives restarts/redeploys on
-// hosts with no persistent disk, e.g. Render's free tier), falling back to
-// the local JSON file for local development without live Firebase creds.
+// Booking storage: Firestore when configured, falling back to the local
+// JSON file for local development without live Firebase creds. When
+// actually running inside Firebase Functions (Cloud Run under the hood,
+// which always sets K_SERVICE), Firebase's own ambient credentials are used
+// automatically -- no key needed there at all. GCP_* vars are only for
+// local dev, and deliberately avoid the FIREBASE_ prefix, which Firebase
+// Functions reserves and refuses to load from a deploy-time .env file.
 const BOOKINGS_COLLECTION = 'bookings';
 let firestoreDb = null;
 function getFirestore() {
   if (firestoreDb) return firestoreDb;
-  if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PRIVATE_KEY) return null;
-  admin.initializeApp({
-    credential: admin.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
-    })
-  });
+  try {
+    if (process.env.GCP_PROJECT_ID && process.env.GCP_CLIENT_EMAIL && process.env.GCP_PRIVATE_KEY) {
+      admin.initializeApp({
+        credential: admin.cert({
+          projectId: process.env.GCP_PROJECT_ID,
+          clientEmail: process.env.GCP_CLIENT_EMAIL,
+          privateKey: process.env.GCP_PRIVATE_KEY.replace(/\\n/g, '\n')
+        })
+      });
+    } else if (process.env.K_SERVICE) {
+      admin.initializeApp();
+    } else {
+      return null;
+    }
+  } catch (error) {
+    console.error('Firestore init error:', error.message);
+    return null;
+  }
   firestoreDb = getFirestoreInstance();
   // Zoom/Calendar dry-run stubs leave fields like zoomMeetingId undefined
   // when those integrations aren't configured; Firestore rejects undefined
@@ -637,7 +651,7 @@ app.get('/api/health', (req, res) => {
       zoom: Boolean(process.env.ZOOM_ACCOUNT_ID && process.env.ZOOM_CLIENT_ID && process.env.ZOOM_CLIENT_SECRET),
       email: Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASSWORD),
       completeSms: Boolean(process.env.COMPLETE_SMS_API_URL),
-      firestore: Boolean(process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY)
+      firestore: Boolean((process.env.GCP_PROJECT_ID && process.env.GCP_CLIENT_EMAIL && process.env.GCP_PRIVATE_KEY) || process.env.K_SERVICE)
     }
   });
 });
