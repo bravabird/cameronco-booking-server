@@ -4,6 +4,7 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 const nodemailer = require('nodemailer');
 const admin = require('firebase-admin');
+const { getFirestore: getFirestoreInstance } = require('firebase-admin/firestore');
 const { onRequest } = require('firebase-functions/v2/https');
 const { onSchedule } = require('firebase-functions/v2/scheduler');
 const crypto = require('crypto');
@@ -68,13 +69,18 @@ function getFirestore() {
   if (firestoreDb) return firestoreDb;
   if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PRIVATE_KEY) return null;
   admin.initializeApp({
-    credential: admin.credential.cert({
+    credential: admin.cert({
       projectId: process.env.FIREBASE_PROJECT_ID,
       clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
       privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
     })
   });
-  firestoreDb = admin.firestore();
+  firestoreDb = getFirestoreInstance();
+  // Zoom/Calendar dry-run stubs leave fields like zoomMeetingId undefined
+  // when those integrations aren't configured; Firestore rejects undefined
+  // values outright (the old JSON.stringify-based store silently dropped
+  // them), so match that original behaviour here.
+  firestoreDb.settings({ ignoreUndefinedProperties: true });
   return firestoreDb;
 }
 
