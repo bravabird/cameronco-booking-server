@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const nodemailer = require('nodemailer');
+const admin = require('firebase-admin');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -56,7 +57,26 @@ const OFFICES = {
   }
 };
 
-function loadBookings() {
+// Booking storage: Firestore when configured (survives restarts/redeploys on
+// hosts with no persistent disk, e.g. Render's free tier), falling back to
+// the local JSON file for local development without live Firebase creds.
+const BOOKINGS_COLLECTION = 'bookings';
+let firestoreDb = null;
+function getFirestore() {
+  if (firestoreDb) return firestoreDb;
+  if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PRIVATE_KEY) return null;
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+    })
+  });
+  firestoreDb = admin.firestore();
+  return firestoreDb;
+}
+
+function loadBookingsFile() {
   try {
     if (!fs.existsSync(BOOKING_STORE_PATH)) return {};
     return JSON.parse(fs.readFileSync(BOOKING_STORE_PATH, 'utf8'));
@@ -66,11 +86,41 @@ function loadBookings() {
   }
 }
 
-function saveBookings(bookings) {
-  fs.writeFileSync(BOOKING_STORE_PATH, JSON.stringify(bookings, null, 2));
+function saveBookingsFile(allBookings) {
+  fs.writeFileSync(BOOKING_STORE_PATH, JSON.stringify(allBookings, null, 2));
 }
 
-let bookings = loadBookings();
+async function getBooking(token) {
+  const db = getFirestore();
+  if (db) {
+    const doc = await db.collection(BOOKINGS_COLLECTION).doc(token).get();
+    return doc.exists ? doc.data() : null;
+  }
+  console.log('[dry-run bookings] Firestore not configured, using local file');
+  return loadBookingsFile()[token] || null;
+}
+
+async function saveBooking(token, booking) {
+  const db = getFirestore();
+  if (db) {
+    await db.collection(BOOKINGS_COLLECTION).doc(token).set(booking);
+    return;
+  }
+  console.log('[dry-run bookings] Firestore not configured, using local file');
+  const all = loadBookingsFile();
+  all[token] = booking;
+  saveBookingsFile(all);
+}
+
+async function getAllBookings() {
+  const db = getFirestore();
+  if (db) {
+    const snapshot = await db.collection(BOOKINGS_COLLECTION).get();
+    return snapshot.docs.map((doc) => doc.data());
+  }
+  return Object.values(loadBookingsFile());
+}
+
 const reminderTimers = new Map();
 
 function addMinutes(date, minutes) {
@@ -385,7 +435,7 @@ function scheduleReminders(booking) {
     const delay = start - Date.now() - reminder.ms;
     if (delay <= 0) return;
     timers.push(setTimeout(async () => {
-      const latest = bookings[booking.manageToken];
+      const latest = await getBooking(booking.manageToken);
       if (!latest || latest.status !== 'confirmed') return;
       const message = `Reminder: your Cameron & Co ${latest.service} appointment is in ${reminder.label}. Manage: ${manageUrl(latest)}`;
       try {
@@ -400,8 +450,6 @@ function scheduleReminders(booking) {
   });
   reminderTimers.set(booking.id, timers);
 }
-
-Object.values(bookings).forEach(scheduleReminders);
 
 // Token Caching Variables
 let cachedToken = null;
@@ -570,7 +618,8 @@ app.get('/api/health', (req, res) => {
       googleCalendar: Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL && process.env.GOOGLE_PRIVATE_KEY),
       zoom: Boolean(process.env.ZOOM_ACCOUNT_ID && process.env.ZOOM_CLIENT_ID && process.env.ZOOM_CLIENT_SECRET),
       email: Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASSWORD),
-      completeSms: Boolean(process.env.COMPLETE_SMS_API_URL)
+      completeSms: Boolean(process.env.COMPLETE_SMS_API_URL),
+      firestore: Boolean(process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY)
     }
   });
 });
@@ -643,8 +692,7 @@ app.post('/api/booking', async (req, res) => {
     const calendar = await createCalendarEvent(booking);
     booking.googleEventId = calendar.eventId;
 
-    bookings[booking.manageToken] = booking;
-    saveBookings(bookings);
+    await saveBooking(booking.manageToken, booking);
     scheduleReminders(booking);
     await notifyBooking(booking, 'confirmed');
 
@@ -655,21 +703,21 @@ app.post('/api/booking', async (req, res) => {
   }
 });
 
-app.get('/api/booking/:token', (req, res) => {
-  const booking = bookings[req.params.token];
+app.get('/api/booking/:token', async (req, res) => {
+  const booking = await getBooking(req.params.token);
   if (!booking) return res.status(404).json({ error: 'Booking not found' });
   res.json({ success: true, booking: publicBooking(booking) });
 });
 
 app.post('/api/booking/:token/cancel', async (req, res) => {
   try {
-    const booking = bookings[req.params.token];
+    const booking = await getBooking(req.params.token);
     if (!booking) return res.status(404).json({ error: 'Booking not found' });
     booking.status = 'cancelled';
     booking.cancelledAt = new Date().toISOString();
     clearReminderTimers(booking.id);
     await Promise.all([deleteCalendarEvent(booking), deleteZoomMeeting(booking)]);
-    saveBookings(bookings);
+    await saveBooking(booking.manageToken, booking);
     await notifyBooking(booking, 'cancelled');
     res.json({ success: true, booking: publicBooking(booking) });
   } catch (error) {
@@ -680,7 +728,7 @@ app.post('/api/booking/:token/cancel', async (req, res) => {
 
 app.post('/api/booking/:token/reschedule', async (req, res) => {
   try {
-    const booking = bookings[req.params.token];
+    const booking = await getBooking(req.params.token);
     if (!booking) return res.status(404).json({ error: 'Booking not found' });
     if (!req.body.slot) return res.status(400).json({ error: 'Missing slot' });
     const start = new Date(req.body.slot);
@@ -691,7 +739,7 @@ app.post('/api/booking/:token/reschedule', async (req, res) => {
     booking.status = 'confirmed';
     booking.updatedAt = new Date().toISOString();
     await Promise.all([updateCalendarEvent(booking), updateZoomMeeting(booking)]);
-    saveBookings(bookings);
+    await saveBooking(booking.manageToken, booking);
     scheduleReminders(booking);
     await notifyBooking(booking, 'rescheduled');
     res.json({ success: true, booking: publicBooking(booking) });
@@ -706,6 +754,11 @@ app.get(['/booking', '/diamonds'], (req, res) => {
   res.sendFile(path.join(__dirname, '..', page));
 });
 
-app.listen(PORT, () => {
-  console.log(`Cameron & Co. integrations server listening on port ${PORT}`);
-});
+(async () => {
+  const existingBookings = await getAllBookings();
+  existingBookings.forEach(scheduleReminders);
+
+  app.listen(PORT, () => {
+    console.log(`Cameron & Co. integrations server listening on port ${PORT}`);
+  });
+})();
