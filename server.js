@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const nodemailer = require('nodemailer');
+const { DateTime } = require('luxon');
 const admin = require('firebase-admin');
 const { getFirestore: getFirestoreInstance } = require('firebase-admin/firestore');
 const { onRequest } = require('firebase-functions/v2/https');
@@ -663,23 +664,31 @@ app.get('/api/booking/availability', async (req, res) => {
     const horizon = new Date(now.getTime() + 21 * 24 * 60 * 60 * 1000);
     const busy = await busyTimes(officeKey, now, horizon);
     const slots = [];
-    const cursor = new Date(now);
-    cursor.setDate(cursor.getDate() + 1);
-    cursor.setHours(9, 0, 0, 0);
 
-    while (cursor < horizon && slots.length < 24) {
-      const day = cursor.getDay();
-      const hour = cursor.getHours();
-      if (day !== 0 && day !== 6 && hour >= 9 && hour < 17) {
-        const start = new Date(cursor);
+    // Business hours are always Sydney-local (9am-5pm, Mon-Fri) regardless
+    // of the server's own timezone -- plain Date.setHours() etc. operate in
+    // the server's local zone, which broke this outright once the server
+    // moved from a local/AU machine to Firebase Functions running in
+    // us-central1: "9am" became 9am US Central, landing in the middle of
+    // the Sydney night. Luxon with an explicit zone avoids that regardless
+    // of where this ends up hosted next, DST included.
+    let cursor = DateTime.fromJSDate(now, { zone: 'Australia/Sydney' })
+      .plus({ days: 1 })
+      .set({ hour: 9, minute: 0, second: 0, millisecond: 0 });
+    const horizonDt = DateTime.fromJSDate(horizon, { zone: 'Australia/Sydney' });
+
+    while (cursor < horizonDt && slots.length < 24) {
+      const weekday = cursor.weekday; // Luxon: 1 = Monday ... 7 = Sunday
+      const hour = cursor.hour;
+      if (weekday !== 6 && weekday !== 7 && hour >= 9 && hour < 17) {
+        const start = cursor.toJSDate();
         const end = addMinutes(start, APPOINTMENT_MINUTES);
         const overlaps = busy.some((item) => start < new Date(item.end) && end > new Date(item.start));
         if (!overlaps) slots.push({ start: start.toISOString(), end: end.toISOString() });
       }
-      cursor.setMinutes(cursor.getMinutes() + 60);
-      if (cursor.getHours() >= 17) {
-        cursor.setDate(cursor.getDate() + 1);
-        cursor.setHours(9, 0, 0, 0);
+      cursor = cursor.plus({ minutes: 60 });
+      if (cursor.hour >= 17) {
+        cursor = cursor.plus({ days: 1 }).set({ hour: 9, minute: 0, second: 0, millisecond: 0 });
       }
     }
 
