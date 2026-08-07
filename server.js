@@ -4,6 +4,8 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 const nodemailer = require('nodemailer');
 const admin = require('firebase-admin');
+const { onRequest } = require('firebase-functions/v2/https');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -120,8 +122,6 @@ async function getAllBookings() {
   }
   return Object.values(loadBookingsFile());
 }
-
-const reminderTimers = new Map();
 
 function addMinutes(date, minutes) {
   return new Date(date.getTime() + minutes * 60000);
@@ -417,38 +417,50 @@ async function notifyBooking(booking, action) {
   ]);
 }
 
-function clearReminderTimers(bookingId) {
-  const timers = reminderTimers.get(bookingId) || [];
-  timers.forEach(clearTimeout);
-  reminderTimers.delete(bookingId);
-}
+// Reminders: a scheduled function (see bottom of file) calls this every 15
+// minutes rather than the old approach of an in-memory setTimeout per
+// booking. A timer waiting in a process's memory doesn't survive that
+// process spinning down between requests -- which happens constantly on
+// serverless/free-tier hosting -- so reminders are now computed fresh each
+// run by scanning confirmed bookings in Firestore. remindersSent on each
+// booking document stops a window firing more than once across runs.
+const REMINDER_WINDOWS = [
+  { key: 'oneDay', ms: 24 * 60 * 60 * 1000, label: '1 day' },
+  { key: 'oneHour', ms: 60 * 60 * 1000, label: '1 hour' }
+];
 
-function scheduleReminders(booking) {
-  clearReminderTimers(booking.id);
-  if (booking.status !== 'confirmed') return;
-  const start = new Date(booking.start).getTime();
-  const timers = [];
-  [
-    { label: '1 day', ms: 24 * 60 * 60 * 1000 },
-    { label: '1 hour', ms: 60 * 60 * 1000 }
-  ].forEach((reminder) => {
-    const delay = start - Date.now() - reminder.ms;
-    if (delay <= 0) return;
-    timers.push(setTimeout(async () => {
-      const latest = await getBooking(booking.manageToken);
-      if (!latest || latest.status !== 'confirmed') return;
-      const message = `Reminder: your Cameron & Co ${latest.service} appointment is in ${reminder.label}. Manage: ${manageUrl(latest)}`;
+async function checkAndSendReminders() {
+  const db = getFirestore();
+  if (!db) {
+    console.log('[reminders] Firestore not configured, skipping reminder check');
+    return;
+  }
+  const snapshot = await db.collection(BOOKINGS_COLLECTION).where('status', '==', 'confirmed').get();
+  const now = Date.now();
+
+  for (const doc of snapshot.docs) {
+    const booking = doc.data();
+    const start = new Date(booking.start).getTime();
+    if (Number.isNaN(start) || start <= now) continue;
+    const sent = booking.remindersSent || {};
+
+    for (const window of REMINDER_WINDOWS) {
+      if (sent[window.key]) continue;
+      const fireAt = start - window.ms;
+      if (now < fireAt) continue;
+
+      const message = `Reminder: your Cameron & Co ${booking.service} appointment is in ${window.label}. Manage: ${manageUrl(booking)}`;
       try {
         await Promise.all([
-          sendEmail(latest.email, `Cameron & Co appointment reminder: ${reminder.label}`, message),
-          sendSms(latest.phone, message)
+          sendEmail(booking.email, `Cameron & Co appointment reminder: ${window.label}`, message),
+          sendSms(booking.phone, message)
         ]);
+        await doc.ref.update({ [`remindersSent.${window.key}`]: true });
       } catch (error) {
         console.error('Reminder send error:', error.message);
       }
-    }, delay));
-  });
-  reminderTimers.set(booking.id, timers);
+    }
+  }
 }
 
 // Token Caching Variables
@@ -693,7 +705,6 @@ app.post('/api/booking', async (req, res) => {
     booking.googleEventId = calendar.eventId;
 
     await saveBooking(booking.manageToken, booking);
-    scheduleReminders(booking);
     await notifyBooking(booking, 'confirmed');
 
     res.status(201).json({ success: true, booking: publicBooking(booking), manageToken: booking.manageToken });
@@ -715,7 +726,6 @@ app.post('/api/booking/:token/cancel', async (req, res) => {
     if (!booking) return res.status(404).json({ error: 'Booking not found' });
     booking.status = 'cancelled';
     booking.cancelledAt = new Date().toISOString();
-    clearReminderTimers(booking.id);
     await Promise.all([deleteCalendarEvent(booking), deleteZoomMeeting(booking)]);
     await saveBooking(booking.manageToken, booking);
     await notifyBooking(booking, 'cancelled');
@@ -738,9 +748,12 @@ app.post('/api/booking/:token/reschedule', async (req, res) => {
     booking.end = addMinutes(start, APPOINTMENT_MINUTES).toISOString();
     booking.status = 'confirmed';
     booking.updatedAt = new Date().toISOString();
+    // Reset so reminders fire again relative to the new time -- otherwise a
+    // reminder already sent for the old slot would silently suppress the
+    // equivalent reminder for the rescheduled one.
+    booking.remindersSent = {};
     await Promise.all([updateCalendarEvent(booking), updateZoomMeeting(booking)]);
     await saveBooking(booking.manageToken, booking);
-    scheduleReminders(booking);
     await notifyBooking(booking, 'rescheduled');
     res.json({ success: true, booking: publicBooking(booking) });
   } catch (error) {
@@ -754,11 +767,15 @@ app.get(['/booking', '/diamonds'], (req, res) => {
   res.sendFile(path.join(__dirname, '..', page));
 });
 
-(async () => {
-  const existingBookings = await getAllBookings();
-  existingBookings.forEach(scheduleReminders);
-
+// Running directly (`node server.js`, e.g. local dev) starts a normal
+// always-listening server. Loaded by the Firebase Functions runtime instead
+// (require.main !== module in that case), only the exports below matter --
+// Functions supplies its own HTTP listener and scheduler.
+if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`Cameron & Co. integrations server listening on port ${PORT}`);
   });
-})();
+}
+
+exports.api = onRequest(app);
+exports.sendReminders = onSchedule('every 15 minutes', checkAndSendReminders);
