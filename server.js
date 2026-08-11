@@ -471,6 +471,82 @@ async function deleteZoomMeeting(booking) {
   return { success: true };
 }
 
+const SHOPIFY_API_VERSION = '2026-07';
+
+let shopifyToken = null;
+let shopifyTokenExpiry = 0;
+
+// Custom app using the client credentials grant (Dev Dashboard apps created
+// after Jan 1 2026 don't issue a permanent token -- see admin-email-settings
+// history). Same cache-and-refresh shape as getZoomToken above.
+async function getShopifyAdminToken() {
+  if (shopifyToken && Date.now() < shopifyTokenExpiry) return shopifyToken;
+  const shop = process.env.SHOPIFY_SHOP;
+  const clientId = process.env.SHOPIFY_CLIENT_ID;
+  const clientSecret = process.env.SHOPIFY_CLIENT_SECRET;
+  if (!shop || !clientId || !clientSecret) return null;
+
+  const response = await fetch(`https://${shop}/admin/oauth/access_token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'client_credentials',
+      client_id: clientId,
+      client_secret: clientSecret
+    })
+  });
+  if (!response.ok) throw new Error(`Shopify auth returned ${response.status}`);
+  const json = await response.json();
+  shopifyToken = json.access_token;
+  shopifyTokenExpiry = Date.now() + (json.expires_in - 120) * 1000;
+  return shopifyToken;
+}
+
+// Creates (or, if the app is later granted read_customers, updates) a
+// Shopify Customer for whoever just booked, so appointments show up
+// alongside orders in Shopify's own Customers list instead of only living
+// in Firestore. Never allowed to fail the booking itself -- callers treat
+// this as a best-effort side sync, matching how Zoom/email failures here
+// already don't block a booking from being confirmed.
+async function syncShopifyCustomer(booking) {
+  const shop = process.env.SHOPIFY_SHOP;
+  const token = await getShopifyAdminToken();
+  if (!token || !shop) return { skipped: true };
+
+  const office = OFFICES[booking.office];
+  const [firstName, ...rest] = booking.name.trim().split(/\s+/);
+  const customerPayload = {
+    first_name: firstName || booking.name,
+    last_name: rest.join(' '),
+    email: booking.email,
+    tags: 'booking-appointment',
+    note: `Booked "${booking.service}" at ${office?.label || booking.office} via the website booking widget.`
+  };
+  if (booking.phone) customerPayload.phone = booking.phone;
+
+  const response = await fetch(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}/customers.json`, {
+    method: 'POST',
+    headers: {
+      'X-Shopify-Access-Token': token,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ customer: customerPayload })
+  });
+
+  if (response.ok) {
+    const json = await response.json();
+    return { customerId: json.customer.id, created: true };
+  }
+
+  // 422 almost always means a customer with this email already exists.
+  // Updating them requires read_customers (to look up their ID first),
+  // which this app isn't currently granted -- log and move on rather than
+  // failing the booking over a CRM side-effect.
+  const errorBody = await response.text().catch(() => '');
+  console.warn('Shopify customer sync skipped:', response.status, errorBody);
+  return { skipped: true, status: response.status };
+}
+
 async function notifyBooking(booking, action) {
   const office = OFFICES[booking.office];
   const subject = `Cameron & Co appointment ${action}: ${booking.service}`;
@@ -693,6 +769,7 @@ app.get('/api/health', async (req, res) => {
     integrations: {
       nivoda: Boolean(NIVODA_USERNAME && NIVODA_PASSWORD),
       googleCalendar: Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL && process.env.GOOGLE_PRIVATE_KEY),
+      shopifyCustomerSync: Boolean(process.env.SHOPIFY_SHOP && process.env.SHOPIFY_CLIENT_ID && process.env.SHOPIFY_CLIENT_SECRET),
       zoom: Boolean(process.env.ZOOM_ACCOUNT_ID && process.env.ZOOM_CLIENT_ID && process.env.ZOOM_CLIENT_SECRET),
       email: Boolean((stored.host || process.env.SMTP_HOST) && (stored.user || process.env.SMTP_USER) && (stored.password || process.env.SMTP_PASSWORD)),
       completeSms: Boolean(process.env.COMPLETE_SMS_API_URL),
@@ -834,6 +911,12 @@ app.post('/api/booking', async (req, res) => {
 
     const calendar = await createCalendarEvent(booking);
     booking.googleEventId = calendar.eventId;
+
+    const shopifyCustomer = await syncShopifyCustomer(booking).catch((error) => {
+      console.error('Shopify customer sync error:', error.message);
+      return { skipped: true };
+    });
+    booking.shopifyCustomerId = shopifyCustomer.customerId;
 
     await saveBooking(booking.manageToken, booking);
     await notifyBooking(booking, 'confirmed');
