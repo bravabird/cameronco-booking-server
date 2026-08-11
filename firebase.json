@@ -6,7 +6,8 @@
       "node_modules",
       ".git",
       ".env",
-      "bookings-store.json"
+      "bookings-store.json",
+      "settings-store.json"
     ]
   }
 }

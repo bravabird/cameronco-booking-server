@@ -192,31 +192,74 @@ function bookingText(booking, action) {
   return lines.filter(Boolean).join('\n');
 }
 
-let smtpTransporter = null;
-function getSmtpTransporter() {
-  if (smtpTransporter) return smtpTransporter;
-  if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASSWORD) return null;
-  smtpTransporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: parseInt(process.env.SMTP_PORT || '587', 10),
+// Email settings: Firestore when configured (so a password rotated via the
+// /admin/email-settings page takes effect immediately, no redeploy), falling
+// back to a local JSON file for dev without live Firebase creds, same
+// pattern as booking storage above. SMTP_* env vars remain the last-resort
+// fallback if nothing has been set through the admin page yet.
+const SETTINGS_STORE_PATH = process.env.SETTINGS_STORE_PATH || path.join(__dirname, 'settings-store.json');
+
+function loadSettingsFile() {
+  try {
+    if (!fs.existsSync(SETTINGS_STORE_PATH)) return {};
+    return JSON.parse(fs.readFileSync(SETTINGS_STORE_PATH, 'utf8'));
+  } catch (error) {
+    console.error('Settings store read error:', error.message);
+    return {};
+  }
+}
+
+function saveSettingsFile(all) {
+  fs.writeFileSync(SETTINGS_STORE_PATH, JSON.stringify(all, null, 2));
+}
+
+async function getEmailSettings() {
+  const db = getFirestore();
+  if (db) {
+    const doc = await db.collection('settings').doc('email').get();
+    return doc.exists ? doc.data() : {};
+  }
+  console.log('[dry-run settings] Firestore not configured, using local file');
+  return loadSettingsFile().email || {};
+}
+
+async function saveEmailSettings(update) {
+  const db = getFirestore();
+  if (db) {
+    await db.collection('settings').doc('email').set(update, { merge: true });
+    return;
+  }
+  console.log('[dry-run settings] Firestore not configured, using local file');
+  const all = loadSettingsFile();
+  all.email = { ...(all.email || {}), ...update };
+  saveSettingsFile(all);
+}
+
+async function getSmtpTransporter() {
+  const stored = await getEmailSettings();
+  const host = stored.host || process.env.SMTP_HOST;
+  const port = stored.port || process.env.SMTP_PORT || '587';
+  const user = stored.user || process.env.SMTP_USER;
+  const pass = stored.password || process.env.SMTP_PASSWORD;
+  if (!host || !user || !pass) return null;
+  return nodemailer.createTransport({
+    host,
+    port: parseInt(port, 10),
     // Port 465 is implicit TLS; 587 (and most others) negotiate TLS via STARTTLS instead.
-    secure: parseInt(process.env.SMTP_PORT || '587', 10) === 465,
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASSWORD
-    }
+    secure: parseInt(port, 10) === 465,
+    auth: { user, pass }
   });
-  return smtpTransporter;
 }
 
 async function sendEmail(to, subject, text) {
-  const transporter = getSmtpTransporter();
+  const transporter = await getSmtpTransporter();
   if (!transporter) {
     console.log('[dry-run email]', { to, subject, text });
     return { dryRun: true };
   }
-  const fromName = process.env.SMTP_FROM_NAME || 'Cameron & Co';
-  const fromEmail = process.env.SMTP_FROM_EMAIL || process.env.SMTP_USER;
+  const stored = await getEmailSettings();
+  const fromName = stored.fromName || process.env.SMTP_FROM_NAME || 'Cameron & Co';
+  const fromEmail = stored.fromEmail || process.env.SMTP_FROM_EMAIL || stored.user || process.env.SMTP_USER;
   return transporter.sendMail({
     from: `"${fromName}" <${fromEmail}>`,
     to,
@@ -643,18 +686,77 @@ app.post('/api/diamonds', async (req, res) => {
   }
 });
 
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  const stored = await getEmailSettings();
   res.json({
     success: true,
     integrations: {
       nivoda: Boolean(NIVODA_USERNAME && NIVODA_PASSWORD),
       googleCalendar: Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL && process.env.GOOGLE_PRIVATE_KEY),
       zoom: Boolean(process.env.ZOOM_ACCOUNT_ID && process.env.ZOOM_CLIENT_ID && process.env.ZOOM_CLIENT_SECRET),
-      email: Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASSWORD),
+      email: Boolean((stored.host || process.env.SMTP_HOST) && (stored.user || process.env.SMTP_USER) && (stored.password || process.env.SMTP_PASSWORD)),
       completeSms: Boolean(process.env.COMPLETE_SMS_API_URL),
       firestore: Boolean((process.env.GCP_PROJECT_ID && process.env.GCP_CLIENT_EMAIL && process.env.GCP_PRIVATE_KEY) || process.env.K_SERVICE)
     }
   });
+});
+
+// Admin settings: lets bookings@cameronco.com.au's SMTP password be rotated
+// from a browser instead of editing the deploy-time .env and redeploying.
+// Guarded by a shared key (ADMIN_API_KEY) rather than the password itself
+// ever being readable back out through the API.
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
+
+function requireAdminKey(req, res, next) {
+  if (!ADMIN_API_KEY) {
+    return res.status(503).json({ error: 'Admin interface not configured (ADMIN_API_KEY is not set).' });
+  }
+  if (req.get('X-Admin-Key') !== ADMIN_API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+
+app.get('/api/admin/email-settings', requireAdminKey, async (req, res) => {
+  try {
+    const stored = await getEmailSettings();
+    res.json({
+      success: true,
+      settings: {
+        host: stored.host || process.env.SMTP_HOST || '',
+        port: stored.port || process.env.SMTP_PORT || '587',
+        user: stored.user || process.env.SMTP_USER || '',
+        fromName: stored.fromName || process.env.SMTP_FROM_NAME || 'Cameron & Co',
+        fromEmail: stored.fromEmail || process.env.SMTP_FROM_EMAIL || '',
+        passwordSet: Boolean(stored.password || process.env.SMTP_PASSWORD)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to load settings', details: error.message });
+  }
+});
+
+app.post('/api/admin/email-settings', requireAdminKey, async (req, res) => {
+  try {
+    const { host, port, user, password, fromName, fromEmail } = req.body || {};
+    if (!host || !user) {
+      return res.status(400).json({ error: 'Host and user (bookings@cameronco.com.au) are required.' });
+    }
+    const update = {
+      host,
+      port: port || '587',
+      user,
+      fromName: fromName || 'Cameron & Co',
+      fromEmail: fromEmail || user
+    };
+    // Only overwrite the stored password if a new one was actually typed in --
+    // leaves it untouched when the admin is just updating the from-name, etc.
+    if (password) update.password = password;
+    await saveEmailSettings(update);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to save settings', details: error.message });
+  }
 });
 
 app.get('/api/booking/availability', async (req, res) => {
@@ -794,6 +896,14 @@ app.post('/api/booking/:token/reschedule', async (req, res) => {
 app.get(['/booking', '/diamonds'], (req, res) => {
   const page = req.path === '/booking' ? 'booking.html' : 'diamonds.html';
   res.sendFile(path.join(__dirname, '..', page));
+});
+
+app.get('/admin/email-settings', (req, res) => {
+  // Served from __dirname (not '..' like /booking and /diamonds below) so
+  // it's actually included in the Cloud Functions deploy bundle, which only
+  // packages this proxy-server directory -- the parent HTML Website folder
+  // those older routes point at isn't uploaded, so they 404 in production.
+  res.sendFile(path.join(__dirname, 'admin-email-settings.html'));
 });
 
 // Running directly (`node server.js`, e.g. local dev) starts a normal
