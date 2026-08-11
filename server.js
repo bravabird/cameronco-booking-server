@@ -173,8 +173,13 @@ function officeFor(value) {
 }
 
 function manageUrl(booking) {
-  const baseUrl = booking.baseUrl || SITE_BASE_URL;
-  return `${baseUrl.replace(/\/$/, '')}/booking.html?booking=${encodeURIComponent(booking.manageToken)}`;
+  // Always the storefront's own booking page -- never booking.baseUrl (the
+  // Cloud Function's own host, which is where the POST request landed, not
+  // where the customer's browser is) and never /booking.html (a leftover
+  // path from the pre-Shopify static site). The live Shopify booking-page
+  // section reads ?booking=<token> from the URL itself and wires up working
+  // Cancel/Reschedule buttons, so this link is all that's needed.
+  return `${SITE_BASE_URL.replace(/\/$/, '')}/pages/booking?booking=${encodeURIComponent(booking.manageToken)}`;
 }
 
 function bookingText(booking, action) {
@@ -901,7 +906,6 @@ app.post('/api/booking', async (req, res) => {
       start: start.toISOString(),
       end: addMinutes(start, APPOINTMENT_MINUTES).toISOString(),
       status: 'confirmed',
-      baseUrl: `${req.protocol}://${req.get('host')}`,
       createdAt: new Date().toISOString()
     };
 
