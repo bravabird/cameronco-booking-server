@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<title>Booking Zoom Settings — Cameron & Co</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    background: #f4f3f0;
+    color: #171d29;
+    margin: 0;
+    padding: 40px 20px;
+  }
+  .card {
+    max-width: 480px;
+    margin: 0 auto;
+    background: #ffffff;
+    border: 1px solid rgba(23,29,41,.12);
+    border-radius: 8px;
+    padding: 32px;
+  }
+  h1 {
+    font-size: 20px;
+    margin: 0 0 6px;
+  }
+  p.lead {
+    margin: 0 0 24px;
+    font-size: 14px;
+    color: #5a6270;
+    line-height: 1.5;
+  }
+  h2.section {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: #5a6270;
+    margin: 28px 0 4px;
+    padding-top: 16px;
+    border-top: 1px solid rgba(23,29,41,.08);
+  }
+  h2.section:first-of-type {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: none;
+  }
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    margin: 16px 0 6px;
+  }
+  input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid rgba(23,29,41,.2);
+    border-radius: 4px;
+    font-size: 14px;
+  }
+  input:focus {
+    outline: 2px solid #D5B226;
+    outline-offset: 1px;
+  }
+  .hint {
+    font-size: 12px;
+    color: #7a8291;
+    margin-top: 4px;
+  }
+  button {
+    margin-top: 24px;
+    width: 100%;
+    padding: 12px;
+    background: #171d29;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled {
+    opacity: .6;
+    cursor: not-allowed;
+  }
+  .status {
+    margin-top: 16px;
+    font-size: 13px;
+    padding: 10px 12px;
+    border-radius: 4px;
+    display: none;
+  }
+  .status.ok { display: block; background: #e8f5e9; color: #1b5e20; }
+  .status.err { display: block; background: #fdecea; color: #b3261e; }
+  .gate {
+    max-width: 360px;
+    margin: 80px auto 0;
+    text-align: center;
+  }
+  .gate input {
+    margin-bottom: 12px;
+  }
+  .badge {
+    display: inline-block;
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #eef1f5;
+    color: #5a6270;
+    margin-left: 8px;
+  }
+  details.instructions {
+    max-width: 480px;
+    margin: 0 auto 16px;
+    background: #ffffff;
+    border: 1px solid rgba(23,29,41,.12);
+    border-radius: 8px;
+    padding: 16px 20px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #33394a;
+  }
+  details.instructions summary {
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 14px;
+    color: #171d29;
+    list-style: none;
+  }
+  details.instructions summary::-webkit-details-marker { display: none; }
+  details.instructions summary::before {
+    content: "▸";
+    display: inline-block;
+    margin-right: 6px;
+    transition: transform .15s;
+  }
+  details.instructions[open] summary::before {
+    transform: rotate(90deg);
+  }
+  details.instructions ol {
+    margin: 14px 0 0;
+    padding-left: 20px;
+  }
+  details.instructions li {
+    margin-bottom: 10px;
+  }
+  details.instructions code {
+    background: #eef1f5;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12px;
+  }
+  details.instructions h3 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: #5a6270;
+    margin: 16px 0 6px;
+  }
+  details.instructions a {
+    color: #171d29;
+  }
+</style>
+</head>
+<body>
+
+<div id="gate" class="gate">
+  <h1>Booking Zoom Settings</h1>
+  <p class="lead">Enter the admin key to continue.</p>
+  <input type="password" id="adminKeyInput" placeholder="Admin key" autocomplete="off">
+  <button id="unlockBtn">Unlock</button>
+  <div id="gateStatus" style="margin-top:12px;font-size:13px;color:#b3261e;"></div>
+</div>
+
+<div id="intro" style="display:none;max-width:480px;margin:0 auto 16px;">
+  <h1 style="margin-bottom:6px;">Booking Zoom Settings</h1>
+  <p class="lead" style="margin-bottom:0;">
+    Melbourne and Sydney each have their own independent Zoom account, so each
+    gets its own Server-to-Server OAuth app below. Changes apply immediately
+    — no redeploy needed.
+  </p>
+</div>
+
+<details class="instructions" id="instructionsBlock" style="display:none;">
+  <summary>How to get these values</summary>
+  <h3>1. Create an OAuth app in each Zoom account</h3>
+  <ol>
+    <li>Go to the <a href="https://marketplace.zoom.us/develop/create" target="_blank" rel="noopener">Zoom App Marketplace developer console</a>, signed in as that office's Zoom account.</li>
+    <li>Click <strong>Build App</strong>, choose <strong>Server-to-Server OAuth</strong>, and name it (e.g. "Cameron &amp; Co Booking — Melbourne").</li>
+    <li>On the app's <strong>App Credentials</strong> page, copy the <strong>Account ID</strong>, <strong>Client ID</strong>, and <strong>Client Secret</strong> into that office's fields below.</li>
+  </ol>
+  <h3>2. Add scopes</h3>
+  <p style="margin:0 0 8px;">Under <strong>Scopes</strong>, add exactly these three (all <code>:admin</code>, not <code>:master</code> — those are for Zoom partner accounts):</p>
+  <ol>
+    <li>Create a meeting for a user &mdash; <code>meeting:write:meeting:admin</code></li>
+    <li>Update a meeting &mdash; <code>meeting:update:meeting:admin</code></li>
+    <li>Delete a meeting &mdash; <code>meeting:delete:meeting:admin</code></li>
+  </ol>
+  <p style="margin:8px 0 0;">Then click <strong>Activate</strong> on the app. Repeat for the other office's Zoom account.</p>
+  <h3>3. Set the meeting host</h3>
+  <p style="margin:0;">Enter the Zoom login email of whoever should host that office's virtual appointments. Every booking gets its own unique meeting link.</p>
+</details>
+
+<div id="melbourneCard" class="card" style="display:none;margin-bottom:16px;">
+  <h2 style="font-size:16px;margin:0 0 16px;">Melbourne <span class="badge" id="melbourneBadge"></span></h2>
+  <form id="melbourneForm" data-office="melbourne">
+    <label for="melbourne-accountId">Account ID</label>
+    <input type="text" id="melbourne-accountId" required>
+
+    <label for="melbourne-clientId">Client ID</label>
+    <input type="text" id="melbourne-clientId" required>
+
+    <label for="melbourne-clientSecret">Client secret <span class="badge" id="melbourne-secretBadge"></span></label>
+    <input type="password" id="melbourne-clientSecret" placeholder="Leave blank to keep the current secret" autocomplete="new-password">
+
+    <label for="melbourne-userId">Zoom user email (meeting host)</label>
+    <input type="email" id="melbourne-userId" placeholder="staff@cameronco.com.au">
+
+    <button type="submit">Save Melbourne settings</button>
+  </form>
+  <div class="status" id="melbourne-status"></div>
+</div>
+
+<div id="sydneyCard" class="card" style="display:none;">
+  <h2 style="font-size:16px;margin:0 0 16px;">Sydney <span class="badge" id="sydneyBadge"></span></h2>
+  <form id="sydneyForm" data-office="sydney">
+    <label for="sydney-accountId">Account ID</label>
+    <input type="text" id="sydney-accountId" required>
+
+    <label for="sydney-clientId">Client ID</label>
+    <input type="text" id="sydney-clientId" required>
+
+    <label for="sydney-clientSecret">Client secret <span class="badge" id="sydney-secretBadge"></span></label>
+    <input type="password" id="sydney-clientSecret" placeholder="Leave blank to keep the current secret" autocomplete="new-password">
+
+    <label for="sydney-userId">Zoom user email (meeting host)</label>
+    <input type="email" id="sydney-userId" placeholder="staff@cameronco.com.au">
+
+    <button type="submit">Save Sydney settings</button>
+  </form>
+  <div class="status" id="sydney-status"></div>
+</div>
+
+<script>
+(function () {
+  var API_BASE = window.CAMERON_CO_BOOKING_API || "https://us-central1-cameronco-booking.cloudfunctions.net/api";
+  var adminKey = sessionStorage.getItem("cc_admin_key") || "";
+  var OFFICES = ["melbourne", "sydney"];
+
+  var gate = document.getElementById("gate");
+  var gateStatus = document.getElementById("gateStatus");
+
+  function showStatus(el, message, ok) {
+    el.textContent = message;
+    el.className = "status " + (ok ? "ok" : "err");
+  }
+
+  function revealPage() {
+    gate.style.display = "none";
+    document.getElementById("intro").style.display = "block";
+    document.getElementById("instructionsBlock").style.display = "block";
+    document.getElementById("melbourneCard").style.display = "block";
+    document.getElementById("sydneyCard").style.display = "block";
+  }
+
+  function loadSettings() {
+    fetch(API_BASE + "/api/admin/zoom-settings", {
+      headers: { "X-Admin-Key": adminKey }
+    })
+      .then(function (res) {
+        if (res.status === 401) throw new Error("Wrong admin key.");
+        if (!res.ok) throw new Error("Could not load settings (" + res.status + ").");
+        return res.json();
+      })
+      .then(function (data) {
+        revealPage();
+        OFFICES.forEach(function (office) {
+          var s = data.settings[office] || {};
+          document.getElementById(office + "-accountId").value = s.accountId || "";
+          document.getElementById(office + "-clientId").value = s.clientId || "";
+          document.getElementById(office + "-userId").value = s.userId || "";
+          document.getElementById(office + "-secretBadge").textContent = s.clientSecretSet ? "currently set" : "not set";
+          document.getElementById(office.charAt(0) === "m" ? "melbourneBadge" : "sydneyBadge").textContent =
+            s.clientSecretSet && s.accountId && s.clientId ? "zoom: on" : "zoom: off";
+        });
+      })
+      .catch(function (err) {
+        sessionStorage.removeItem("cc_admin_key");
+        showStatus(gateStatus, err.message, false);
+      });
+  }
+
+  document.getElementById("unlockBtn").addEventListener("click", function () {
+    adminKey = document.getElementById("adminKeyInput").value.trim();
+    if (!adminKey) return;
+    sessionStorage.setItem("cc_admin_key", adminKey);
+    loadSettings();
+  });
+
+  OFFICES.forEach(function (office) {
+    document.getElementById(office + "Form").addEventListener("submit", function (e) {
+      e.preventDefault();
+      var form = e.currentTarget;
+      var saveBtn = form.querySelector("button[type=submit]");
+      var statusEl = document.getElementById(office + "-status");
+      saveBtn.disabled = true;
+      var payload = {
+        office: office,
+        accountId: document.getElementById(office + "-accountId").value.trim(),
+        clientId: document.getElementById(office + "-clientId").value.trim(),
+        userId: document.getElementById(office + "-userId").value.trim()
+      };
+      var clientSecret = document.getElementById(office + "-clientSecret").value.trim();
+      if (clientSecret) payload.clientSecret = clientSecret;
+
+      fetch(API_BASE + "/api/admin/zoom-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Admin-Key": adminKey },
+        body: JSON.stringify(payload)
+      })
+        .then(function (res) {
+          return res.json().then(function (data) {
+            if (!res.ok) throw new Error(data.error || "Save failed.");
+            return data;
+          });
+        })
+        .then(function () {
+          showStatus(statusEl, "Saved. New " + office + " Virtual Enquiry bookings will use these settings right away.", true);
+          document.getElementById(office + "-clientSecret").value = "";
+          loadSettings();
+        })
+        .catch(function (err) {
+          showStatus(statusEl, err.message, false);
+        })
+        .finally(function () {
+          saveBtn.disabled = false;
+        });
+    });
+  });
+
+  if (adminKey) loadSettings();
+})();
+</script>
+
+</body>
+</html>
